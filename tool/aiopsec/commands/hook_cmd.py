@@ -18,15 +18,37 @@ def _claude_dir() -> Path:
     return Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude"))
 
 
+def _pkg_dir() -> Path:
+    """找到 aiopsec 包所在的父目录（即 sys.path 上能 import 到它的那层）。"""
+    return Path(__file__).resolve().parents[2]
+
+
+def _hook_script(sub: str) -> Path:
+    """生成一个自带路径的 launcher 脚本，不依赖 pip install -e。"""
+    d = _claude_dir() / "aiopsec"
+    d.mkdir(parents=True, exist_ok=True)
+    script = d / f"hook-{sub}.py"
+    pkg = _pkg_dir()
+    body = (
+        "#!/usr/bin/env python3\n"
+        '"""aiopsec hook launcher —— 由 aiopsec hook --install 生成，可删。"""\n'
+        "import sys\n"
+        f"sys.path.insert(0, {str(pkg)!r})\n"
+        "from aiopsec.commands.hook_cmd import main_entry\n"
+        f"sys.exit(main_entry({sub!r}))\n"
+    )
+    script.write_text(body, encoding="utf-8")
+    return script
+
+
 def _self_cmd(sub: str) -> str:
     """生成调用本工具的 hook 命令。"""
-    py = sys.executable or "python3"
-    return f'"{py}" -m aiopsec hook {sub}'
+    py = sys.executable or sys.executable or "python3"
+    return f'"{py}" "{_hook_script(sub)}"'
 
 
 def _guarded_cmd() -> str:
-    py = sys.executable or "python3"
-    return f'"{py}" -m aiopsec hook guard'
+    return _self_cmd("guard")
 
 
 # ------------------------------------------------------------------ guard
@@ -224,6 +246,15 @@ def _status() -> int:
                     found = True
     if not found:
         print(O.kv("状态", O.yellow("未安装")))
+    return 0
+
+
+def main_entry(which: str) -> int:
+    """给生成的 launcher 脚本用的入口。"""
+    if which == "guard":
+        return guard()
+    if which == "banner":
+        return banner()
     return 0
 
 

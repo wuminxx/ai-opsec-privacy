@@ -1,0 +1,11 @@
+
+# --- AI agent config (aiopsec) ---
+.claude/
+.cursor/
+.continue/
+.aider*
+.codex/
+AGENTS.md
+CLAUDE.md
+.windsurf/
+# --- end ---
