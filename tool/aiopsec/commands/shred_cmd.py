@@ -67,6 +67,19 @@ def add_parser(sub):
     return p
 
 
+# 配置与凭据类路径 —— 只有 --include-config 时才加入
+CONFIG_TARGETS = [
+    "~/.claude/settings.json",
+    "~/.claude/credentials.json",
+    "~/.claude.json",
+    "~/.codex/config.toml",
+    "~/.codex/auth.json",
+    "~/.cursor/mcp.json",
+    "~/.continue/config.json",
+    "~/.aider.conf.yml",
+]
+
+
 def run(args) -> int:
     want = {a.lower() for a in args.app} if args.app else None
 
@@ -83,6 +96,15 @@ def run(args) -> int:
                 targets.append(t)
         else:
             targets.append(t)
+
+    # --include-config：显式加入配置与凭据路径
+    if args.include_config:
+        from ..core.surface import Target
+        for spec in CONFIG_TARGETS:
+            p = Path(os.path.expandvars(spec)).expanduser()
+            if want and not any(w in str(p).lower() for w in want):
+                continue
+            targets.append(Target(p, "config", "配置/凭据", True))
 
     # 去重
     seen = set()
@@ -122,7 +144,8 @@ def run(args) -> int:
             total_files += n
             total_bytes += sz
             if args.force:
-                if _is_clear_only(p) and args.include_config is False:
+                if _is_clear_only(p):
+                    # history.jsonl 这类：清空内容但保留文件
                     try:
                         p.write_text("")
                         cleared += 1
