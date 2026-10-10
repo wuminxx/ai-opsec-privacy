@@ -101,18 +101,26 @@ aiopsec audit --json            # 机器可读
 
 ```bash
 aiopsec scan --sensitive-only        # 只看高危
-aiopsec scan --app claude-code       # 只看某客户端
+aiopsec scan --app claude-code       # 只看某客户端（--app 可重复）
+aiopsec scan --max-files 50000       # 单目录文件上限（默认 200000）
 aiopsec scan --json
 ```
+
+**性能**：`os.scandir` + 线程池并发 + 每目标 20s 时间上限 + 纯缓存目录跳过。
+本机实测 120s+ → 3.8s（含浏览器 profile 1.35GB）。
+插件目录（`~/.claude/plugins`，548MB 下载缓存）只查顶层元数据，不递归。
 
 ### `aiopsec check` — 泄露检查
 
 ```bash
-aiopsec check -f app.log
-aiopsec check -t "帮我看看 13800138000"
+aiopsec check -f app.log             # 单文件（- 表示 stdin）
+aiopsec check -t "帮我看看 13800138000"   # 直接给文本
 aiopsec check -d ./src               # 递归扫目录
 aiopsec check -f x.log --min-severity HIGH
+aiopsec check -d ./src --max-files 10000
+aiopsec check -f x.log --show-raw    # 打印原始命中值（危险）
 aiopsec check -f x.log --json
+aiopsec check -f x.log --quiet       # 只输出结论，适合 CI
 ```
 
 **检测类别**（`--kind`）：
@@ -130,10 +138,11 @@ aiopsec check -f x.log --json
 
 ```bash
 cat app.log | aiopsec redact                 # stdout
+aiopsec redact -t "我的电话 13800138000"       # 直接给文本
 aiopsec redact -f app.log -o clean.log       # 写文件
-aiopsec redact -f app.log --in-place         # 就地改（自动 .bak）
+aiopsec redact -f app.log --in-place         # 就地改（自动生成 .bak）
 aiopsec redact -f app.log --dry-run          # 只报会替换多少处
-aiopsec redact -f app.log --kind secret      # 只处理密钥
+aiopsec redact -f app.log --kind secret --kind pii   # 只处理指定类别
 ```
 
 替换顺序按 `secret > pii > infra > path`，避免高优先级被后处理误伤。**幂等**：已脱敏的文本再跑不会变。
@@ -210,10 +219,14 @@ aiopsec harden --apply --target gitignore --gitignore-dir ~/proj
 
 ```bash
 aiopsec hook                      # 查看状态
+aiopsec hook --status             # 同上
 aiopsec hook --install            # 预演
 aiopsec hook --install --apply    # 安装
 aiopsec hook --uninstall --apply  # 卸载
 ```
+
+安装时会在 `~/.claude/aiopsec/` 生成 `hook-guard.py` / `hook-banner.py`
+launcher 脚本，内嵌包路径 —— **不依赖 `pip install -e`**，clone 后直接可用。
 
 装两个 hook：
 

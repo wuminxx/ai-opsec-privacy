@@ -15,6 +15,39 @@ description: "用 AI 时零身份暴露、零隐私泄漏的操作规程。覆�
 
 ---
 
+## 工具优先（有 `aiopsec` 就直接用，别手搓）
+
+本仓库带一个 CLI，覆盖本文档的绝大多数机械性操作。**能跑工具就别背命令**。
+
+```bash
+pip install -e <repo>/tool/     # 或 cd tool && python -m aiopsec
+
+aiopsec audit                   # 先跑这个：全量体检 + 0-100 评分 + 整改清单
+aiopsec scan                    # 测绘落盘取证面（30+ 路径，含浅扫优化）
+aiopsec check -f <file>         # 检查泄漏（退出码 0 通过 / 1 有问题 / 2 用法错）
+aiopsec check -d <dir>          # 递归扫目录
+aiopsec redact < in > out       # 脱敏（幂等）
+aiopsec shred --force           # 清理会话痕迹
+aiopsec env                     # 时区/语言/出口IP 一致性
+aiopsec harden --apply          # 关遥测 + 限制 Copilot
+aiopsec hook --install --apply  # 装运行时拦截
+```
+
+| 本文档章节 | 对应命令 |
+|---|---|
+| 1. L1 会话层 | `aiopsec scan` / `shred` / `harden` |
+| 2. L2 提示词层 | `aiopsec check` / `redact` |
+| 3. L3 网络层 | `aiopsec env` |
+| 6. 上线前自查 | `aiopsec audit` |
+
+无 Python 环境时，用仓库 `scripts/` 下的纯 shell 版本（`scan.sh` / `redact.sh` /
+`check-prompt.sh` / `shred.sh`）。功能少一些，核心覆盖。
+
+**工具覆盖不到的（仍需人工判断）**：姓名/学校/公司/职级/措辞习惯、语义关联、
+法律义务、磁盘物理擦除。工具降低机械失误，不替代判断。
+
+---
+
 ## 0. 威胁模型（先定清楚，否则做多或做少）
 
 先回答这四问，再决定做到哪一层：
@@ -493,6 +526,21 @@ B 全部 +
 
 ## 9. 快速命令卡
 
+**有工具时（首选）**
+
+```bash
+aiopsec audit                    # 体检，看评分和整改清单
+aiopsec scan                     # 测绘
+cat f | aiopsec check            # 检查，退出码 1 = 有泄漏
+cat f | aiopsec redact > clean   # 脱敏
+aiopsec env                      # 环境指纹
+aiopsec harden --apply           # 加固
+aiopsec hook --install --apply   # 拦截
+aiopsec shred --force            # 清理
+```
+
+**无工具时（纯 shell 兜底）**
+
 ```bash
 # 测绘（Linux/macOS）
 ls -la ~/.claude ~/.codex ~/.cursor ~/.ollama 2>/dev/null
@@ -502,18 +550,36 @@ du -sh ~/.claude/* 2>/dev/null | sort -h
 rm -rf ~/.claude/projects/* ~/.claude/todos/* ~/.claude/shell-snapshots/*
 shred -u -n 3 ~/.claude/history.jsonl 2>/dev/null || : > ~/.claude/history.jsonl
 
-# 本地模型（不出网）
+# 或改用仓库脚本
+./scripts/scan.sh
+cat f | ./scripts/redact.sh
+./scripts/check-prompt.sh --file f
+./scripts/shred.sh --force
+```
+
+**本地模型（不出网）**
+
+```bash
+# Ollama
 OLLAMA_HOST=127.0.0.1:11434 ollama run qwen2.5:14b
 
-# 验证不泄漏真实 IP
-curl -s https://api.ipify.org; echo
+# 仓库脚本（一步起好并验证只绑本地）
+./scripts/local-model.sh ollama qwen2.5:14b
+./scripts/local-model.sh check
 
-# 网络命名空间隔离跑 AI
+# 网络命名空间隔离（Linux，进程完全无网）
 sudo unshare -n -- bash -c 'OLLAMA_HOST=127.0.0.1:11434 ollama run qwen2.5:14b'
 ```
 
+**验证不泄漏真实 IP**
+
+```bash
+curl -s https://api.ipify.org; echo
+aiopsec env --offline     # 或只查本地，不触网
+```
+
 ```powershell
-# 测绘（Windows）
+# 测绘（Windows，无工具时）
 Get-ChildItem "$env:USERPROFILE\.claude","$env:USERPROFILE\.codex",
   "$env:USERPROFILE\.cursor","$env:APPDATA\Claude" -ErrorAction SilentlyContinue |
   Select-Object FullName
@@ -521,6 +587,9 @@ Get-ChildItem "$env:USERPROFILE\.claude","$env:USERPROFILE\.codex",
 Get-ChildItem "$env:USERPROFILE\.claude\projects" -Recurse -File |
   Remove-Item -Force
 Clear-Content "$env:USERPROFILE\.claude\history.jsonl"
+# 或
+.\scripts\scan.ps1
+.\scripts\shred.ps1 -Force
 ```
 
 ---
