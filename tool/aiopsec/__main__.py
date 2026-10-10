@@ -54,9 +54,26 @@ def build() -> argparse.ArgumentParser:
     return p
 
 
+def _force_utf8_io() -> None:
+    """Windows 上默认 GBK，中文输出到管道会 UnicodeEncodeError。
+    强制 stdout/stderr 用 UTF-8，保证 --json 等机器可读输出稳定。"""
+    if sys.version_info >= (3, 7):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
 def main(argv: list[str] | None = None) -> int:
+    _force_utf8_io()
     parser = build()
-    args = parser.parse_args(argv)
+    # argparse 在参数错误时会 SystemExit(2)；显式接住，保证退出码可控
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as e:
+        return int(e.code) if isinstance(e.code, int) else 2
+
     if not getattr(args, "command", None):
         parser.print_help()
         return 2
@@ -64,6 +81,7 @@ def main(argv: list[str] | None = None) -> int:
     if fn is None:
         parser.print_help()
         return 2
+
     try:
         return fn(args) or 0
     except KeyboardInterrupt:
@@ -71,6 +89,15 @@ def main(argv: list[str] | None = None) -> int:
         return 130
     except BrokenPipeError:
         return 0
+    except FileNotFoundError as e:
+        print(f"文件不存在: {e.filename or e}", file=sys.stderr)
+        return 2
+    except PermissionError as e:
+        print(f"权限不足: {e.filename or e}", file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"IO 错误: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
