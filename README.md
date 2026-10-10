@@ -1,9 +1,22 @@
 # AI OPSEC & Privacy
 
-**用 AI 时零身份暴露、零隐私泄漏的操作规程 + 可执行工具。**
+**用 AI 时零身份暴露、零隐私泄漏的工具 + 规程。**
+
+一个零依赖的 Python CLI 工具（`aiopsec`）+ 一套可复用的 **Claude Code Skill**。
+
+```bash
+pip install -e tool/
+aiopsec audit          # 体检：0-100 评分 + 整改清单
+aiopsec scan           # 测绘：你的机器上 AI 留了什么
+aiopsec check -f x.log # 检查：发送前扫身份泄漏
+aiopsec redact < x.log # 脱敏
+aiopsec shred --force  # 清理
+aiopsec env            # 环境指纹一致性
+aiopsec harden --apply # 加固配置
+aiopsec hook --install --apply   # 自动拦截含身份字段的输入
+```
 
 覆盖三层：AI 客户端落盘取证面、提示词身份字段清洗、网络与提供商留存。
-每一层都给**可直接跑的命令**，不是原则清单。
 
 ```
 L1 会话层   AI 客户端在你机器上写什么、怎么清
@@ -11,7 +24,7 @@ L2 提示词层 你送进去的文本会留下什么
 L3 网络层   出网时谁看得见、留存多久
 ```
 
-任一层单独用都不够，三层叠加才是「任一场景都不被发现」。
+任一层单独用都不够，三层叠加才够。
 
 ---
 
@@ -43,23 +56,39 @@ AI 客户端把**完整对话明文写到磁盘**。这不是猜测，是默认�
 
 ## 快速开始
 
+**方式一：Python 工具（推荐）**
+
 ```bash
 git clone https://github.com/wuminxx/ai-opsec-privacy.git
 cd ai-opsec-privacy
+pip install -e tool/
 
-# 1. 先测绘：知道你的机器上 AI 痕迹在哪
-./scripts/scan.sh          # Linux/macOS
-.\scripts\scan.ps1         # Windows
+aiopsec audit                        # 1. 全量体检，看评分和整改清单
+aiopsec scan                         # 2. 看具体在哪些目录
+cat app.log | aiopsec check          # 3. 发送前检查
+cat app.log | aiopsec redact         #    脱敏
+aiopsec env                          # 4. 环境指纹
+aiopsec harden --apply               # 5. 关遥测 + 加固
+aiopsec hook --install --apply       # 6. 装自动拦截
+aiopsec shred --force                # 7. 清理
+```
 
-# 2. 检查一份即将发给 AI 的文本
-cat app.log | ./scripts/redact.sh          # 脱敏
-./scripts/check-prompt.sh --file app.log   # 只检查不修改
+**方式二：纯 shell（无 Python）**
 
-# 3. 装 hook，自动拦截含身份字段的输入（Claude Code）
-./scripts/install-hooks.sh
+```bash
+./scripts/scan.sh                        # Linux/macOS
+.\scripts\scan.ps1                       # Windows
+cat app.log | ./scripts/redact.sh        # 脱敏
+./scripts/check-prompt.sh --file app.log # 检查
+./scripts/install-hooks.sh               # 装 hook
+./scripts/shred.sh                       # 清理（先 DRY-RUN）
+```
 
-# 4. 用完清理
-./scripts/shred.sh
+**方式三：只给 AI 用**
+
+```bash
+cp -r . ~/.claude/skills/ai-opsec-privacy/
+# 之后 /ai-opsec-privacy，或提到 AI 隐私/OPSEC/本地模型/会话清理 时自动触发
 ```
 
 ---
@@ -69,30 +98,59 @@ cat app.log | ./scripts/redact.sh          # 脱敏
 ```
 ai-opsec-privacy/
 ├── README.md
-├── SKILL.md                      AI skill 版（给 Claude Code 用）
+├── SKILL.md                      Claude Code Skill（给 AI 读的规程）
 ├── LICENSE                       MIT
-├── scripts/
-│   ├── scan.sh / scan.ps1        测绘：找出所有 AI 客户端落盘面
-│   ├── redact.sh / redact.ps1    脱敏：剥离身份字段
-│   ├── check-prompt.sh           检查：发送前扫描身份泄漏（不修改）
-│   ├── shred.sh / shred.ps1      擦除：清 AI 会话痕迹
-│   ├── local-model.sh            本地模型：三步起一个不出网的实例
-│   └── install-hooks.sh          装 Claude Code PreToolUse hook
-├── hooks/
-│   ├── prompt-guard.py           PreToolUse hook：拦截含身份字段的输入
-│   └── settings.snippet.json     要合并进 settings.json 的片段
-├── docs/
-│   ├── threat-model.md           威胁模型：先定清楚防谁
-│   ├── forensics-surface.md      落盘取证面完整测绘
+│
+├── tool/                         ★ 主工具：aiopsec CLI
+│   ├── README.md                 工具文档（完整命令参考）
+│   ├── pyproject.toml            可 pip install
+│   ├── aiopsec/
+│   │   ├── __main__.py           CLI 入口
+│   │   ├── core/
+│   │   │   ├── rules.py          检测规则表（单一数据源）
+│   │   │   ├── engine.py         检测 + 脱敏引擎
+│   │   │   ├── surface.py        落盘取证面测绘
+│   │   │   ├── environment.py    环境指纹一致性
+│   │   │   └── output.py         终端输出
+│   │   └── commands/             8 个子命令
+│   └── tests/                    34 个单元测试（零依赖 unittest）
+│
+├── hooks/                        独立的 hook 脚本（不想装 pip 包时用）
+│   ├── prompt-guard.py           UserPromptSubmit 拦截
+│   ├── session-banner.py         SessionStart 提示
+│   └── settings.snippet.json
+│
+├── scripts/                      纯 shell 版（无 Python 环境时用）
+│   ├── scan.sh / scan.ps1
+│   ├── redact.sh / redact.ps1
+│   ├── check-prompt.sh
+│   ├── shred.sh / shred.ps1
+│   ├── local-model.sh
+│   └── install-hooks.sh
+│
+├── docs/                         规程文档
+│   ├── threat-model.md           先定清楚防谁
+│   ├── forensics-surface.md      各客户端落盘点逐条
 │   ├── prompt-hygiene.md         提示词卫生
-│   ├── providers.md              各 AI 厂商留存政策对照
-│   ├── local-models.md           Ollama / llama.cpp / vLLM 部署
+│   ├── providers.md              厂商留存政策检查模板
+│   ├── local-models.md           Ollama / llama.cpp / vLLM + 断网
 │   ├── network.md                网络与元数据泄漏
-│   └── checklist.md              上线前自查清单
-└── examples/
-    ├── pseudo-identity.txt       假身份模板
-    └── gitignore.txt             AI 配置的 .gitignore 片段
+│   └── checklist.md              上线前自查
+│
+├── examples/
+│   ├── pseudo-identity.txt       假身份模板 + 一致性检查
+│   └── gitignore.txt             AI 配置 .gitignore + 清史流程
+│
+└── .github/workflows/ci.yml      三平台 × 两 Python 版本 + 功能测试
 ```
+
+**三种用法，按环境选一种：**
+
+| 环境 | 用什么 |
+|---|---|
+| 有 Python | `tool/` — 功能最全（8 命令、JSON 输出、hook 安装） |
+| 只有 shell | `scripts/` — 核心功能，无依赖 |
+| 只想让 AI 自己遵守 | `SKILL.md` — 拷到 `~/.claude/skills/ai-opsec-privacy/` |
 
 ---
 
@@ -101,17 +159,15 @@ ai-opsec-privacy/
 ### L1 会话层
 
 ```bash
-# 测绘
-./scripts/scan.sh
+aiopsec scan                    # 测绘：看看机器上留了什么
+aiopsec harden --apply          # 关遥测
+aiopsec shred                   # 预演清理
+aiopsec shred --force           # 执行
+```
 
-# 关遥测（~/.claude/settings.json）
-{ "env": { "DISABLE_TELEMETRY": "1", "DISABLE_ERROR_REPORTING": "1" } }
-
+```bash
 # 会话目录挂 tmpfs（Linux）—— 重启即失
 sudo mount -t tmpfs -o size=512m,mode=0700,uid=$(id -u) tmpfs ~/.claude/projects
-
-# 擦除
-./scripts/shred.sh
 ```
 
 > **警告**：SSD + TRIM + 写时复制文件系统（btrfs/ZFS/APFS）下，原地覆写**不保证**擦除旧块。
@@ -120,19 +176,25 @@ sudo mount -t tmpfs -o size=512m,mode=0700,uid=$(id -u) tmpfs ~/.claude/projects
 ### L2 提示词层
 
 ```bash
-# 脱敏流水线：路径用户名 / 内网 IP / 邮箱 / 手机 / token / 内部主机名
-cat app.log | ./scripts/redact.sh
-
-# 只检查，不改（退出码非零 = 发现泄漏）
-./scripts/check-prompt.sh --file app.log
+cat app.log | aiopsec check      # 只检查，退出码 1 = 有泄漏
+cat app.log | aiopsec redact     # 脱敏
+aiopsec check -d ./src           # 递归扫目录
 ```
+
+检测 40+ 规则：Anthropic/OpenAI/GitHub/AWS/Google/Slack key、PEM 私钥、JWT、连接串、
+中国手机号/身份证（带校验位）/车牌、邮箱、银行卡（Luhn）、内网 IP、内部主机名、用户路径。
 
 ### L3 网络层
 
 ```bash
+aiopsec env                      # 时区/语言/出口IP 是否互相矛盾
+aiopsec env --ip 1.2.3.4         # 查指定 IP 归属
+
 # 本地模型，只绑 127.0.0.1，不出网
 ./scripts/local-model.sh ollama qwen2.5:14b
+```
 
+```bash
 # 验证不泄漏真实 IP
 curl -s https://api.ipify.org; echo
 ```
@@ -178,11 +240,9 @@ curl -s https://api.ipify.org; echo
 
 ## 作为 Claude Code Skill 使用
 
-```bash
-cp -r . ~/.claude/skills/ai-opsec-privacy/
-```
+见上方"方式三"。Skill 内容在 `SKILL.md`，与工具解耦 —— 工具升级不影响 Skill，反之亦然。
 
-然后 `/ai-opsec-privacy`，或提到 AI 隐私 / OPSEC / 本地模型 / 会话清理 / prompt 脱敏时自动触发。
+`aiopsec hook --install --apply` 装的是运行时拦截；Skill 是让 AI 主动遵守规程。两者互补。
 
 ---
 
