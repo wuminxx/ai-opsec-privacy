@@ -15,6 +15,8 @@ class Target:
     app: str
     desc: str
     sensitive: bool = False
+    # 只统计顶层文件，不递归（用于含大量下载缓存的目录，如插件目录）
+    shallow: bool = False
 
 
 @dataclass
@@ -37,8 +39,10 @@ class SurfaceHit:
         return f"{b} B"
 
 
-def _t(p: str, app: str, desc: str, sensitive: bool = False) -> Target:
-    return Target(Path(os.path.expandvars(p)).expanduser(), app, desc, sensitive)
+def _t(p: str, app: str, desc: str, sensitive: bool = False,
+       shallow: bool = False) -> Target:
+    return Target(Path(os.path.expandvars(p)).expanduser(), app, desc,
+                  sensitive, shallow)
 
 
 def default_targets() -> list[Target]:
@@ -50,7 +54,9 @@ def default_targets() -> list[Target]:
         _t("~/.claude/todos", "claude-code", "任务清单", False),
         _t("~/.claude/shell-snapshots", "claude-code", "shell 快照（含 env）", True),
         _t("~/.claude/statsig", "claude-code", "遥测 ID", False),
-        _t("~/.claude/plugins", "claude-code", "插件缓存", False),
+        _t("~/.claude/plugins", "claude-code",
+           "插件目录（只查顶层：installed/marketplaces 元数据）", False,
+           shallow=True),
         # ---- Codex ----
         _t("~/.codex/sessions", "codex", "会话记录", True),
         _t("~/.codex/history.jsonl", "codex", "输入历史", True),
@@ -101,67 +107,123 @@ SENSITIVE_NAME_HINTS = (
 )
 
 
-def _walk_stats(root: Path, max_files: int = 200_000) -> tuple[int, int, float, list[str]]:
+# 遍历时跳过的纯缓存目录（不含任何一个存储会话/历史数据的位置）
+SKIP_DIRS = frozenset({
+    ".git", "node_modules", "__pycache__", ".venv", "venv",
+    ".mypy_cache", ".pytest_cache", "dist", "build", ".tox",
+    # 浏览器纯缓存（无对话内容）
+    "Code Cache", "GPUCache", "ShaderCache", "GrShaderCache",
+    "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache",
+    "Cache_Data", "CacheStorage", "Service Worker",
+    # 保留：Local Storage / IndexedDB / Session Storage
+    #       —— 浏览器版 AI 的会话就存在这里，不能跳
+})
+
+
+def _walk_stats(root: Path, max_files: int = 200_000,
+                max_seconds: float = 20.0, shallow: bool = False
+                ) -> tuple[int, int, float, list[str]]:
+    """用 os.scandir 统计目录（比 os.walk + lstat 快数倍）。
+
+    shallow=True 时只统计顶层文件，不进子目录。
+    带时间上限，避免超大目录拖死整个扫描。
+    """
+    import time as _t
     total = 0
     count = 0
     newest = 0.0
     samples: list[str] = []
-    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-        # 跳过明显的噪声目录，加速
-        dirnames[:] = [d for d in dirnames if d not in
-                       (".git", "node_modules", "__pycache__", ".venv", "venv")]
-        for fn in filenames:
-            p = Path(dirpath) / fn
-            try:
-                st = p.lstat()
-            except OSError:
-                continue
-            total += st.st_size
-            count += 1
-            if st.st_mtime > newest:
-                newest = st.st_mtime
-            if len(samples) < 8:
-                low = fn.lower()
-                if any(h in low for h in SENSITIVE_NAME_HINTS):
-                    samples.append(str(p))
-            if count >= max_files:
-                return total, count, newest, samples
+    deadline = _t.monotonic() + max_seconds
+    stack: list[str] = [str(root)]
+
+    while stack:
+        if count >= max_files or _t.monotonic() > deadline:
+            break
+        cur = stack.pop()
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if not shallow and entry.name not in SKIP_DIRS:
+                                stack.append(entry.path)
+                            continue
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        continue
+                    total += st.st_size
+                    count += 1
+                    if st.st_mtime > newest:
+                        newest = st.st_mtime
+                    if len(samples) < 8:
+                        low = entry.name.lower()
+                        if any(h in low for h in SENSITIVE_NAME_HINTS):
+                            samples.append(entry.path)
+                    if count >= max_files:
+                        break
+        except OSError:
+            continue
+
     return total, count, newest, samples
 
 
-def probe(targets: list[Target] | None = None) -> list[SurfaceHit]:
-    targets = targets or default_targets()
-    hits: list[SurfaceHit] = []
-    seen: set[str] = set()
-
-    for t in targets:
-        p = t.path
+def _probe_one(t: Target) -> SurfaceHit | None:
+    p = t.path
+    try:
         if not p.exists():
-            continue
-        key = str(p.resolve()) if p.exists() else str(p)
-        if key in seen:
-            continue
-        seen.add(key)
-
+            return None
         if p.is_file():
-            try:
-                st = p.stat()
-            except OSError:
-                continue
-            hits.append(SurfaceHit(
+            st = p.stat()
+            return SurfaceHit(
                 path=str(p), app=t.app, desc=t.desc,
                 bytes=st.st_size, files=1,
                 sensitive=t.sensitive, newest=st.st_mtime,
                 samples=[str(p)] if t.sensitive else [],
-            ))
-        elif p.is_dir():
-            total, count, newest, samples = _walk_stats(p)
-            hits.append(SurfaceHit(
+            )
+        if p.is_dir():
+            total, count, newest, samples = _walk_stats(p, shallow=t.shallow)
+            return SurfaceHit(
                 path=str(p), app=t.app, desc=t.desc,
                 bytes=total, files=count,
                 sensitive=t.sensitive or bool(samples),
                 newest=newest, samples=samples,
-            ))
+            )
+    except OSError:
+        return None
+    return None
+
+
+def probe(targets: list[Target] | None = None) -> list[SurfaceHit]:
+    targets = targets or default_targets()
+
+    # 去重（避免 symlink / 重复路径重复遍历）
+    seen: set[str] = set()
+    uniq: list[Target] = []
+    for t in targets:
+        try:
+            key = str(t.path.resolve())
+        except OSError:
+            key = str(t.path)
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(t)
+
+    hits: list[SurfaceHit] = []
+    # 并发遍历：各目标互相独立，IO bound
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        workers = min(8, max(2, (os.cpu_count() or 4)))
+        with ThreadPoolExecutor(max_workers=workers) as ex:
+            for h in ex.map(_probe_one, uniq):
+                if h is not None:
+                    hits.append(h)
+    except Exception:
+        # 并发不可用时退回串行
+        for t in uniq:
+            h = _probe_one(t)
+            if h is not None:
+                hits.append(h)
 
     hits.sort(key=lambda h: (-h.sensitive, -h.bytes))
     return hits
